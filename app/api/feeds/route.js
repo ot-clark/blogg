@@ -1,4 +1,4 @@
-import { addFeed, addPosts, getFeeds } from '../../../lib/database';
+import { addFeed, addPosts, getFeeds, deleteFeed } from '../../../lib/database';
 import { scrapeWebsite } from '../../../lib/scraper';
 
 export async function POST(request) {
@@ -12,7 +12,7 @@ export async function POST(request) {
     const { feed, posts } = await scrapeWebsite(url);
 
     // Add feed to database
-    const savedFeed = addFeed(feed);
+    const savedFeed = await addFeed(feed);
 
     // Add posts to database
     const postsWithFeedId = posts.map(post => ({
@@ -20,7 +20,7 @@ export async function POST(request) {
       feed_id: savedFeed.id
     }));
     
-    const addedCount = addPosts(postsWithFeedId);
+    const addedCount = await addPosts(postsWithFeedId);
 
     return new Response(JSON.stringify({ 
       feed: savedFeed, 
@@ -34,10 +34,32 @@ export async function POST(request) {
 
 export async function GET() {
   try {
-    const feeds = getFeeds();
+    const feeds = await getFeeds();
     return new Response(JSON.stringify({ feeds }), { status: 200 });
   } catch (error) {
     console.error('Error in GET /api/feeds:', error);
+    return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+  }
+}
+
+export async function DELETE(request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const feedId = searchParams.get('id');
+    
+    if (!feedId) {
+      return new Response(JSON.stringify({ error: 'Missing feed ID' }), { status: 400 });
+    }
+
+    const result = await deleteFeed(feedId);
+    
+    return new Response(JSON.stringify({ 
+      message: `Feed "${result.feed.title}" deleted successfully`,
+      deletedFeed: result.feed,
+      deletedPostsCount: result.deletedPostsCount
+    }), { status: 200 });
+  } catch (error) {
+    console.error('Error in DELETE /api/feeds:', error);
     return new Response(JSON.stringify({ error: error.message }), { status: 500 });
   }
 } 
