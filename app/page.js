@@ -14,6 +14,10 @@ export default function Home() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMorePosts, setHasMorePosts] = useState(true);
   const [totalPostsCount, setTotalPostsCount] = useState(0);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
+  const [newPostsCount, setNewPostsCount] = useState(0);
+  const [lastPostCount, setLastPostCount] = useState(0);
+  const [isCheckingForUpdates, setIsCheckingForUpdates] = useState(false);
   const observerRef = useRef();
   const loadingRef = useRef();
 
@@ -80,22 +84,91 @@ export default function Home() {
     };
   }, [visibleCount, hasMorePosts, loadMorePosts, loadingMore]);
 
+  // Enhanced auto-refresh functionality
   useEffect(() => {
     fetchPosts();
     fetchFeeds();
     
-    // Set up auto-refresh every 5 minutes
-    const autoRefreshInterval = setInterval(() => {
-      refreshFeeds();
-    }, 5 * 60 * 1000); // 5 minutes
+    if (!autoRefreshEnabled) return;
 
-    return () => clearInterval(autoRefreshInterval);
-  }, []);
+    // Quick check for new posts every 30 seconds
+    const quickCheckInterval = setInterval(async () => {
+      try {
+        setIsCheckingForUpdates(true);
+        const response = await fetch('/api/posts?limit=1');
+        const data = await response.json();
+        const currentPostCount = data.totalCount;
+        
+        if (currentPostCount > lastPostCount && lastPostCount > 0) {
+          const newCount = currentPostCount - lastPostCount;
+          setNewPostsCount(newCount);
+          console.log(`Found ${newCount} new posts! Refreshing immediately...`);
+          
+          // Immediately refresh posts to show new content
+          fetchPosts();
+          setNewPostsCount(0);
+        }
+        
+        setLastPostCount(currentPostCount);
+      } catch (error) {
+        console.error('Quick check failed:', error);
+      } finally {
+        setIsCheckingForUpdates(false);
+      }
+    }, 30 * 1000); // 30 seconds
+
+    // Full refresh every 2 minutes (more frequent than before)
+    const fullRefreshInterval = setInterval(async () => {
+      if (!refreshing) {
+        console.log('Auto-refreshing feeds...');
+        setRefreshing(true);
+        try {
+          // Force refresh to get the most recent posts
+          const response = await fetch('/api/feeds/refresh', { 
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force: true })
+          });
+          const data = await response.json();
+          console.log('Auto-refresh result:', data);
+          setLastRefresh(new Date());
+          fetchFeeds();
+          fetchPosts();
+        } catch (err) {
+          console.error('Auto-refresh failed:', err);
+        } finally {
+          setRefreshing(false);
+        }
+      }
+    }, 2 * 60 * 1000); // 2 minutes
+
+    return () => {
+      clearInterval(quickCheckInterval);
+      clearInterval(fullRefreshInterval);
+    };
+  }, [autoRefreshEnabled, refreshing, lastPostCount]);
 
   async function fetchPosts() {
     try {
       const response = await fetch('/api/posts?limit=10');
       const data = await response.json();
+      
+      // Debug: Log the posts we're getting
+      console.log('Fetched posts:', data.posts.map(p => ({
+        title: p.title,
+        published_at: p.published_at,
+        created_at: p.created_at,
+        feed_id: p.feed_id
+      })));
+      
+      // Debug: Check if we have any posts with recent dates
+      const now = new Date();
+      const recentPosts = data.posts.filter(p => {
+        const postDate = new Date(p.published_at);
+        const diffInHours = (now - postDate) / (1000 * 60 * 60);
+        return diffInHours < 24; // Posts from last 24 hours
+      });
+      console.log(`Found ${recentPosts.length} posts from last 24 hours:`, recentPosts.map(p => p.title));
       
       // Add feed titles to posts
       const postsWithFeedTitles = data.posts.map(post => ({
@@ -106,7 +179,8 @@ export default function Home() {
       setPosts(postsWithFeedTitles);
       setVisibleCount(10);
       setTotalPostsCount(data.totalCount);
-      setHasMorePosts(data.posts.length === 10 && data.totalCount > 10); // If we got 10 posts and there are more than 10 total
+      setLastPostCount(data.totalCount);
+      setHasMorePosts(data.posts.length === 10 && data.totalCount > 10);
     } catch (err) {
       setError(err.message);
     }
@@ -125,7 +199,12 @@ export default function Home() {
   async function refreshFeeds() {
     setRefreshing(true);
     try {
-      const response = await fetch('/api/feeds/refresh', { method: 'POST' });
+      // Force refresh to get the most recent posts
+      const response = await fetch('/api/feeds/refresh', { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: true })
+      });
       const data = await response.json();
       console.log('Refresh result:', data);
       setLastRefresh(new Date());
@@ -191,6 +270,73 @@ export default function Home() {
     }
   }
 
+  async function testRecentPosts() {
+    try {
+      // Test with a specific feed to see what the most recent posts are
+      const response = await fetch('/api/feeds');
+      const feedsData = await response.json();
+      
+      if (feedsData.feeds && feedsData.feeds.length > 0) {
+        const firstFeed = feedsData.feeds[0];
+        console.log('Testing recent posts for feed:', firstFeed.title, firstFeed.url);
+        
+        // Manually trigger a refresh for this specific feed
+        const refreshResponse = await fetch('/api/feeds/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ force: true })
+        });
+        const refreshData = await refreshResponse.json();
+        console.log('Refresh result:', refreshData);
+        
+        // Now fetch posts again
+        setTimeout(async () => {
+          const postsResponse = await fetch('/api/posts?limit=5');
+          const postsData = await postsResponse.json();
+          console.log('Most recent 5 posts after refresh:', postsData.posts.map(p => ({
+            title: p.title,
+            published_at: p.published_at,
+            feed_title: feeds.find(f => f.id === p.feed_id)?.title || 'Unknown'
+          })));
+        }, 2000);
+      }
+    } catch (err) {
+      console.error('Test failed:', err);
+    }
+  }
+
+  async function cleanupInvalidPosts() {
+    try {
+      const response = await fetch('/api/posts', { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cleanup-invalid' })
+      });
+      const data = await response.json();
+      console.log('Cleanup result:', data);
+      fetchPosts(); // Refresh the posts display
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function debugPosts() {
+    try {
+      const response = await fetch('/api/posts?limit=50');
+      const data = await response.json();
+      console.log('All posts in database:', data.posts.map(p => ({
+        title: p.title,
+        published_at: p.published_at,
+        created_at: p.created_at,
+        feed_id: p.feed_id,
+        url: p.url
+      })));
+      alert(`Total posts: ${data.totalCount}. Check console for details.`);
+    } catch (err) {
+      console.error('Debug failed:', err);
+    }
+  }
+
   async function handleSubmit(e) {
     e.preventDefault();
     setLoading(true);
@@ -253,6 +399,28 @@ export default function Home() {
     <div className="max-w-4xl mx-auto p-6">
       <h1 className="text-4xl font-bold mb-8 text-center">Blog Aggregator</h1>
       
+      {/* New Posts Notification */}
+      {newPostsCount > 0 && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6 animate-pulse">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 bg-green-500 rounded-full animate-ping"></div>
+              <span className="text-green-800 font-medium">
+                🎉 {newPostsCount} new {newPostsCount === 1 ? 'post' : 'posts'} found! Refreshing...
+              </span>
+            </div>
+            <button
+              onClick={() => setNewPostsCount(0)}
+              className="text-green-600 hover:text-green-800"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+      
       {/* Add Blog Form */}
       <div className="bg-white rounded-lg shadow-md p-6 mb-8">
         <h2 className="text-xl font-semibold mb-4">Add a Blog</h2>
@@ -287,6 +455,24 @@ export default function Home() {
           <h2 className="text-xl font-semibold">Feed Status</h2>
           <div className="flex gap-2">
             <button
+              onClick={testRecentPosts}
+              className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors"
+            >
+              Test Recent Posts
+            </button>
+            <button
+              onClick={cleanupInvalidPosts}
+              className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors"
+            >
+              Cleanup Invalid Posts
+            </button>
+            <button
+              onClick={debugPosts}
+              className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors"
+            >
+              Debug Posts
+            </button>
+            <button
               onClick={fixDates}
               className="bg-orange-600 text-white px-4 py-2 rounded-lg hover:bg-orange-700 transition-colors"
             >
@@ -303,15 +489,57 @@ export default function Home() {
               disabled={refreshing}
               className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 disabled:opacity-50 transition-colors"
             >
-              {refreshing ? "Refreshing..." : "Refresh All Feeds"}
+              {refreshing ? "Refreshing..." : "Force Refresh All"}
             </button>
           </div>
         </div>
+        
+        {/* Auto-refresh toggle */}
+        <div className="flex items-center justify-between mb-4 p-3 bg-gray-50 rounded-lg">
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-medium">Auto-refresh</span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setAutoRefreshEnabled(true)}
+                className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                  autoRefreshEnabled 
+                    ? 'bg-green-600 text-white' 
+                    : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                }`}
+              >
+                ON
+              </button>
+              <button
+                onClick={() => setAutoRefreshEnabled(false)}
+                className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                  !autoRefreshEnabled 
+                    ? 'bg-red-600 text-white' 
+                    : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                }`}
+              >
+                OFF
+              </button>
+            </div>
+          </div>
+          <div className="text-xs text-gray-500">
+            {autoRefreshEnabled ? '🟢 Active' : '🔴 Disabled'}
+          </div>
+        </div>
+        
         <div className="text-sm text-gray-600">
-          <p>• Auto-refresh: Every 5 minutes</p>
+          <p>• Auto-refresh: Every 2 minutes (full refresh) + 30 seconds (quick check)</p>
           <p>• Last manual refresh: {lastRefresh ? formatTimeAgo(lastRefresh.toISOString()) : "Never"}</p>
           <p>• Total feeds: {feeds.length}</p>
           <p>• Posts stored: {totalPostsCount}/50 (most recent)</p>
+          {autoRefreshEnabled && (
+            <p className="text-green-600 font-medium">• Auto-refresh is active - new posts will appear automatically!</p>
+          )}
+          {isCheckingForUpdates && (
+            <div className="text-blue-600 font-medium flex items-center gap-2">
+              <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-blue-600"></div>
+              Checking for new posts...
+            </div>
+          )}
         </div>
       </div>
 

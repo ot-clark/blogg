@@ -1,4 +1,4 @@
-import { getPosts, getPostsCount, fixNullDates, trimPostsToLimit } from '../../../lib/database';
+import { getPosts, getPostsCount, fixNullDates, trimPostsToLimit, cleanupInvalidPosts } from '../../../lib/database';
 
 export async function GET(request) {
   try {
@@ -34,6 +34,14 @@ export async function POST(request) {
       const removedCount = await trimPostsToLimit(50);
       return new Response(JSON.stringify({ 
         message: `Trimmed posts to 50 most recent. Removed ${removedCount} older posts.`,
+        removedCount 
+      }), { status: 200 });
+    }
+    
+    if (action === 'cleanup-invalid') {
+      const removedCount = await cleanupInvalidPosts();
+      return new Response(JSON.stringify({ 
+        message: `Removed ${removedCount} invalid posts (navigation links, etc.)`,
         removedCount 
       }), { status: 200 });
     }

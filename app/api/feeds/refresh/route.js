@@ -1,4 +1,4 @@
-import { getFeedsNeedingRefresh, refreshFeed, addPosts, getFeeds } from '../../../../lib/database';
+import { getFeedsNeedingRefresh, refreshFeed, addPosts, getFeeds, updateFeedLastFetched } from '../../../../lib/database';
 import { scrapeWebsite } from '../../../../lib/scraper';
 
 export async function POST(request) {
@@ -16,6 +16,7 @@ export async function POST(request) {
       // Allow refresh if forced or if feed is older than 1 hour
       if (force || lastFetched < oneHourAgo) {
         try {
+          console.log(`Refreshing feed: ${feed.title} (${feed.url})`);
           const result = await scrapeWebsite(feed.url);
           
           // Update feed with new data
@@ -27,7 +28,8 @@ export async function POST(request) {
             last_updated: new Date().toISOString()
           };
           
-          await refreshFeed(feed.id);
+          // Update the feed in the database
+          await updateFeedLastFetched(feed.id);
           
           // Add new posts
           const postsWithFeedId = result.posts.map(post => ({
